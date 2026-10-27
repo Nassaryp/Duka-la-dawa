@@ -22,13 +22,14 @@ if "sales_df" not in st.session_state:
     else:
         st.session_state.sales_df = pd.DataFrame(columns=[
             "Sale ID", "Date", "Drug Name", "Qty Sold", 
-            "Total Price (TZS)", "Seller", "Dosage Instructions"
+            "Total Price (TZS)", "Seller", "Payment Method", 
+            "Patient Name", "Prescriber", "Dosage Instructions"
         ])
 
 if "cart" not in st.session_state:
     st.session_state.cart = []
 
-# Helper function to save to CSV
+# Helper function to save data to CSV files
 def save_data():
     st.session_state.inventory.to_csv("inventory.csv", index=False)
     st.session_state.sales_df.to_csv("sales.csv", index=False)
@@ -42,19 +43,18 @@ app_mode = st.sidebar.selectbox("Choose Mode", ["🛒 Seller Point of Sale (POS)
 # ==========================================
 if app_mode == "🛒 Seller Point of Sale (POS)":
     st.title("🛒 Pharmacy Sales Counter")
-    st.markdown("Search medicines, calculate dosages, build customer carts, and complete sales.")
+    st.markdown("Search medicines, calculate dosages, record patient prescriptions, and manage customer checkouts.")
 
     if st.session_state.inventory.empty:
         st.warning("No medicines in inventory yet. Please ask the Admin to add stock first.")
     else:
         col1, col2 = st.columns([1.2, 1.8])
         
-        # --- LEFT COLUMN: ITEM SELECTION & DOSAGE CALCULATOR ---
+        # --- LEFT COLUMN: ITEM SELECTION & DOSAGE ---
         with col1:
             st.subheader("1. Select & Add Item")
             
-            # Search filter
-            search_query = st.text_input("🔍 Search medicine:")
+            search_query = st.text_input("🔍 Search medicine by name or category:")
             available_drugs = st.session_state.inventory[st.session_state.inventory['Stock Qty'] > 0].copy()
             
             if search_query:
@@ -66,18 +66,17 @@ if app_mode == "🛒 Seller Point of Sale (POS)":
             drug_options = available_drugs['Drug Name'].tolist()
             
             if not drug_options:
-                st.error("No matching medicines in stock!")
+                st.error("No matching medicines currently in stock!")
             else:
                 selected_drug = st.selectbox("Select Medicine", drug_options)
                 
-                # Fetch selected drug info
                 drug_row = available_drugs[available_drugs['Drug Name'] == selected_drug].iloc[0]
                 current_stock = int(drug_row['Stock Qty'])
                 unit_price = float(drug_row['Selling Price (TZS)'])
                 
                 st.info(f"Price: **TSh {unit_price:,.0f}** | In Stock: **{current_stock} units**")
                 
-                # Dosage & Calculator Block
+                # Dosage Calculator Block
                 st.markdown("---")
                 st.markdown("##### 📐 Dosage & Quantity Calculator")
                 
@@ -107,19 +106,17 @@ if app_mode == "🛒 Seller Point of Sale (POS)":
                     multiplier = freq_multiplier_map[dose_freq]
                     
                     days = st.number_input("Duration (Number of Days)", min_value=1, max_value=30, value=3)
-                    units_per_dose = st.number_input("Units per Dose (e.g., 1 or 2 tabs)", min_value=1, max_value=10, value=1)
+                    units_per_dose = st.number_input("Units per Dose (e.g., 1 or 2 tablets)", min_value=1, max_value=10, value=1)
                     
                     calculated_qty = multiplier * days * units_per_dose
                     st.caption(f"💡 Calculated Quantity: **{calculated_qty} units** ({units_per_dose} unit(s) × {multiplier} times/day × {days} days)")
                     
-                    # Set default calculated quantity
                     default_qty = min(calculated_qty, current_stock)
                     dosage_note = f"{dose_freq.split(' ')[0]} for {days} days"
                 else:
                     default_qty = 1
                     dosage_note = st.text_input("Dosage Instructions (Optional):", value="")
 
-                # Final quantity adjustment
                 final_qty = st.number_input("Quantity to Add to Cart", min_value=1, max_value=current_stock, value=default_qty)
                 
                 if st.button("➕ Add Item to Cart", type="secondary"):
@@ -134,17 +131,27 @@ if app_mode == "🛒 Seller Point of Sale (POS)":
                     st.success(f"Added {selected_drug} (x{final_qty}) to cart!")
                     st.rerun()
 
-        # --- RIGHT COLUMN: CUSTOMER CART & CHECKOUT ---
+        # --- RIGHT COLUMN: CART & CHECKOUT ---
         with col2:
-            st.subheader("2. Shopping Cart & Bill Summary")
-            seller_name = st.text_input("Seller Name / Cashier:", value="Staff 1")
+            st.subheader("2. Customer Cart & Professional Checkout")
             
+            c1, c2 = st.columns(2)
+            with c1:
+                seller_name = st.text_input("Cashier / Seller:", value="Staff 1")
+            with c2:
+                payment_method = st.selectbox("Payment Method", ["Cash", "M-Pesa", "Tigo Pesa", "Airtel Money", "Credit (Mkopo)"])
+            
+            c3, c4 = st.columns(2)
+            with c3:
+                patient_name = st.text_input("Patient Name (Optional):", value="")
+            with c4:
+                prescriber = st.text_input("Prescriber / Doctor (Optional):", value="")
+
             if not st.session_state.cart:
-                st.info("🛒 The cart is currently empty. Select a medicine on the left to add items.")
+                st.info("🛒 The cart is empty. Select medicines on the left to build the order.")
             else:
                 cart_df = pd.DataFrame(st.session_state.cart)
                 
-                # Display Cart Table
                 st.dataframe(
                     cart_df[["Drug Name", "Qty", "Unit Price (TZS)", "Dosage Instructions", "Subtotal (TZS)"]], 
                     use_container_width=True
@@ -165,18 +172,16 @@ if app_mode == "🛒 Seller Point of Sale (POS)":
                         sale_id = "S-" + str(len(st.session_state.sales_df) + 1001)
                         now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
                         
-                        # Update Inventory and record sales for each item
+                        # Process items and deduct stock
                         for item in st.session_state.cart:
                             d_name = item["Drug Name"]
                             qty_sold = item["Qty"]
                             total_p = item["Subtotal (TZS)"]
                             instructions = item["Dosage Instructions"]
                             
-                            # Deduct stock
                             idx = st.session_state.inventory[st.session_state.inventory['Drug Name'] == d_name].index[0]
                             st.session_state.inventory.at[idx, 'Stock Qty'] -= qty_sold
                             
-                            # Record Sale Row
                             new_sale = pd.DataFrame([{
                                 "Sale ID": sale_id,
                                 "Date": now_str,
@@ -184,16 +189,16 @@ if app_mode == "🛒 Seller Point of Sale (POS)":
                                 "Qty Sold": qty_sold,
                                 "Total Price (TZS)": total_p,
                                 "Seller": seller_name,
+                                "Payment Method": payment_method,
+                                "Patient Name": patient_name if patient_name else "Walk-in",
+                                "Prescriber": prescriber if prescriber else "Self / OTC",
                                 "Dosage Instructions": instructions
                             }])
                             st.session_state.sales_df = pd.concat([st.session_state.sales_df, new_sale], ignore_index=True)
 
-                        # Save to CSV
                         save_data()
-                        
-                        # Reset Cart
                         st.session_state.cart = []
-                        st.success(f"Transaction {sale_id} completed successfully! Total Paid: TSh {total_bill:,.0f}")
+                        st.success(f"Transaction {sale_id} completed via {payment_method}! Total Paid: TSh {total_bill:,.0f}")
                         st.balloons()
                         st.rerun()
 
@@ -212,7 +217,7 @@ elif app_mode == "🔒 Admin Dashboard":
         
         # TAB 1: REPORTS
         with tab1:
-            st.subheader("Financial & Sales Performance")
+            st.subheader("Financial & Payment Breakdown")
             
             if st.session_state.sales_df.empty:
                 st.info("No sales recorded yet.")
@@ -224,7 +229,12 @@ elif app_mode == "🔒 Admin Dashboard":
                 m1, m2, m3 = st.columns(3)
                 m1.metric("Total Revenue", f"TSh {total_revenue:,.0f}")
                 m2.metric("Items Sold", total_items_sold)
-                m3.metric("Total Checkout Bills", total_transactions)
+                m3.metric("Total Bills", total_transactions)
+                
+                st.markdown("### Revenue by Payment Method")
+                if 'Payment Method' in st.session_state.sales_df.columns:
+                    payment_summary = st.session_state.sales_df.groupby('Payment Method')['Total Price (TZS)'].sum().reset_index()
+                    st.dataframe(payment_summary, use_container_width=True)
                 
                 st.markdown("### Detailed Transaction Log")
                 st.dataframe(st.session_state.sales_df, use_container_width=True)
@@ -245,7 +255,7 @@ elif app_mode == "🔒 Admin Dashboard":
             st.subheader("Add New Medicine to Inventory")
             
             with st.form("add_drug_form", clear_on_submit=True):
-                d_name = st.text_input("Drug Name (e.g., Paracetamol 500mg)")
+                d_name = st.text_input("Drug Name (e.g., Amoxicillin 500mg)")
                 d_category = st.selectbox("Category", ["Painkillers", "Antibiotics", "Antimalarials", "Supplements", "First Aid", "Syrups", "Other"])
                 d_cost = st.number_input("Buying / Cost Price per Unit (TZS)", min_value=0.0, step=100.0)
                 d_selling = st.number_input("Selling Price per Unit (TZS)", min_value=0.0, step=100.0)
