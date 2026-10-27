@@ -1,0 +1,183 @@
+import streamlit as st
+import pandas as pd
+from datetime import datetime
+
+# --- PAGE CONFIGURATION ---
+st.set_page_config(page_title="Duka la Dawa System", page_icon="💊", layout="wide")
+
+# --- INITIALIZE DATABASE FILES (CSV) ---
+@st.cache_resource
+def load_data():
+    try:
+        inventory = pd.read_csv("inventory.csv")
+    except FileNotFoundError:
+        inventory = pd.DataFrame(columns=["ID", "Drug Name", "Category", "Cost Price (TZS)", "Selling Price (TZS)", "Stock Qty", "Expiry Date"])
+    
+    try:
+        sales = pd.read_csv("sales.csv")
+    except FileNotFoundError:
+        sales = pd.DataFrame(columns=["Sale ID", "Date", "Drug Name", "Qty Sold", "Total Price (TZS)", "Seller"])
+        
+    return inventory, sales
+
+inventory, sales_df = load_data()
+
+# Helper function to save data
+def save_data(inv, sal):
+    inv.to_csv("inventory.csv", index=False)
+    sal.to_csv("sales.csv", index=False)
+
+# --- SIDEBAR NAVIGATION ---
+st.sidebar.title("💊 Duka la Dawa POS")
+app_mode = st.sidebar.selectbox("Choose Mode", ["🛒 Seller Point of Sale (POS)", "🔒 Admin Dashboard"])
+
+# ==========================================
+# 1. SELLER POINT OF SALE (POS)
+# ==========================================
+if app_mode == "🛒 Seller Point of Sale (POS)":
+    st.title("🛒 Pharmacy Sales Counter")
+    st.markdown("Search for medicines, check stock, and record customer purchases.")
+
+    if inventory.empty:
+        st.warning("No medicines in inventory yet. Please ask the Admin to add stock first.")
+    else:
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            st.subheader("Available Medicines")
+            search_query = st.text_input("🔍 Search drug by name or category:")
+            
+            filtered_inv = inventory.copy()
+            if search_query:
+                filtered_inv = filtered_inv[
+                    filtered_inv['Drug Name'].str.contains(search_query, case=False, na=False) |
+                    filtered_inv['Category'].str.contains(search_query, case=False, na=False)
+                ]
+            
+            st.dataframe(filtered_inv[['ID', 'Drug Name', 'Category', 'Selling Price (TZS)', 'Stock Qty', 'Expiry Date']], use_container_width=True)
+
+        with col2:
+            st.subheader("New Sale Checkout")
+            seller_name = st.text_input("Seller Name / Cashier:", value="Staff 1")
+            
+            # Select Drug
+            drug_options = inventory[inventory['Stock Qty'] > 0]['Drug Name'].tolist()
+            if not drug_options:
+                st.error("All items are out of stock!")
+            else:
+                selected_drug = st.selectbox("Select Medicine", drug_options)
+                
+                # Get drug details
+                drug_row = inventory[inventory['Drug Name'] == selected_drug].iloc[0]
+                max_stock = int(drug_row['Stock Qty'])
+                unit_price = float(drug_row['Selling Price (TZS)'])
+                
+                st.info(f"Price: **TSh {unit_price:,.0f}** | In Stock: **{max_stock} units**")
+                
+                qty_to_sell = st.number_input("Quantity to Sell", min_value=1, max_value=max_stock, value=1)
+                total_amount = qty_to_sell * unit_price
+                
+                st.markdown(f"### Total: TSh {total_amount:,.0f}")
+                
+                if st.button("Complete Sale & Print Receipt", type="primary"):
+                    # Update Inventory Stock
+                    inventory.loc[inventory['Drug Name'] == selected_drug, 'Stock Qty'] -= qty_to_sell
+                    
+                    # Record Sale
+                    new_sale = pd.DataFrame([{
+                        "Sale ID": "S-" + str(len(sales_df) + 1001),
+                        "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        "Drug Name": selected_drug,
+                        "Qty Sold": qty_to_sell,
+                        "Total Price (TZS)": total_amount,
+                        "Seller": seller_name
+                    }])
+                    
+                    sales_df = pd.concat([sales_df, new_sale], ignore_index=True)
+                    save_data(inventory, sales_df)
+                    
+                    st.success(f"Sale completed successfully! Total: TSh {total_amount:,.0f}")
+                    st.balloons()
+                    st.rerun()
+
+# ==========================================
+# 2. ADMIN DASHBOARD
+# ==========================================
+elif app_mode == "🔒 Admin Dashboard":
+    st.title("🔒 Admin Management & Reports")
+    
+    # Simple security pin
+    admin_pin = st.text_input("Enter Admin PIN (Default PIN: 1234)", type="password")
+    
+    if admin_pin == "1234":
+        st.success("Access Granted!")
+        
+        tab1, tab2, tab3 = st.tabs(["📊 Sales Reports", "📦 Inventory Control", "➕ Add New Drug"])
+        
+        # TAB 1: REPORTS
+        with tab1:
+            st.subheader("Financial & Sales Performance")
+            
+            if sales_df.empty:
+                st.info("No sales recorded yet.")
+            else:
+                total_revenue = sales_df['Total Price (TZS)'].sum()
+                total_items_sold = sales_df['Qty Sold'].sum()
+                total_transactions = len(sales_df)
+                
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Total Revenue", f"TSh {total_revenue:,.0f}")
+                m2.metric("Items Sold", total_items_sold)
+                m3.metric("Total Transactions", total_transactions)
+                
+                st.markdown("### Detailed Transaction Log")
+                st.dataframe(sales_df, use_container_width=True)
+                
+                # CSV Download buttons
+                st.download_button("📥 Download Sales Report (CSV)", sales_df.to_csv(index=False), "sales_report.csv", "text/csv")
+
+        # TAB 2: INVENTORY CONTROL
+        with tab2:
+            st.subheader("Manage Current Stock & Expiry Dates")
+            if inventory.empty:
+                st.info("Inventory is empty.")
+            else:
+                # Highlight low stock or near expiry
+                st.dataframe(inventory, use_container_width=True)
+                st.download_button("📥 Download Inventory List (CSV)", inventory.to_csv(index=False), "inventory_stock.csv", "text/csv")
+
+        # TAB 3: ADD NEW DRUG
+        with tab3:
+            st.subheader("Add New Medicine to Inventory")
+            
+            with st.form("add_drug_form"):
+                d_id = "DRG-" + str(len(inventory) + 101)
+                d_name = st.text_input("Drug Name (e.g., Paracetamol 500mg)")
+                d_category = st.selectbox("Category", ["Painkillers", "Antibiotics", "Antimalarials", "Supplements", "First Aid", "Syrups", "Other"])
+                d_cost = st.number_input("Buying / Cost Price per Unit (TZS)", min_value=0.0, step=100.0)
+                d_selling = st.number_input("Selling Price per Unit (TZS)", min_value=0.0, step=100.0)
+                d_qty = st.number_input("Initial Stock Quantity", min_value=0, step=1)
+                d_expiry = st.date_input("Expiry Date")
+                
+                submitted = st.form_submit_button("Save Medicine")
+                
+                if submitted:
+                    if d_name:
+                        new_drug = pd.DataFrame([{
+                            "ID": d_id,
+                            "Drug Name": d_name,
+                            "Category": d_category,
+                            "Cost Price (TZS)": d_cost,
+                            "Selling Price (TZS)": d_selling,
+                            "Stock Qty": d_qty,
+                            "Expiry Date": str(d_expiry)
+                        }])
+                        
+                        inventory = pd.concat([inventory, new_drug], ignore_index=True)
+                        save_data(inventory, sales_df)
+                        st.success(f"Successfully added {d_name} to inventory!")
+                        st.rerun()
+                    else:
+                        st.error("Please enter a valid drug name.")
+    elif admin_pin != "":
+        st.error("Incorrect PIN. Default PIN is 1234.")
