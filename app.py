@@ -6,7 +6,7 @@ import os
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Duka la Dawa System", page_icon="💊", layout="wide")
 
-# --- INITIALIZE DATABASE IN SESSION STATE ---
+# --- INITIALIZE DATABASE & CART IN SESSION STATE ---
 if "inventory" not in st.session_state:
     if os.path.exists("inventory.csv"):
         st.session_state.inventory = pd.read_csv("inventory.csv")
@@ -22,8 +22,11 @@ if "sales_df" not in st.session_state:
     else:
         st.session_state.sales_df = pd.DataFrame(columns=[
             "Sale ID", "Date", "Drug Name", "Qty Sold", 
-            "Total Price (TZS)", "Seller"
+            "Total Price (TZS)", "Seller", "Dosage Instructions"
         ])
+
+if "cart" not in st.session_state:
+    st.session_state.cart = []
 
 # Helper function to save to CSV
 def save_data():
@@ -39,72 +42,160 @@ app_mode = st.sidebar.selectbox("Choose Mode", ["🛒 Seller Point of Sale (POS)
 # ==========================================
 if app_mode == "🛒 Seller Point of Sale (POS)":
     st.title("🛒 Pharmacy Sales Counter")
-    st.markdown("Search for medicines, check stock, and record customer purchases.")
+    st.markdown("Search medicines, calculate dosages, build customer carts, and complete sales.")
 
     if st.session_state.inventory.empty:
         st.warning("No medicines in inventory yet. Please ask the Admin to add stock first.")
     else:
-        col1, col2 = st.columns([2, 1])
+        col1, col2 = st.columns([1.2, 1.8])
         
+        # --- LEFT COLUMN: ITEM SELECTION & DOSAGE CALCULATOR ---
         with col1:
-            st.subheader("Available Medicines")
-            search_query = st.text_input("🔍 Search drug by name or category:")
+            st.subheader("1. Select & Add Item")
             
-            filtered_inv = st.session_state.inventory.copy()
+            # Search filter
+            search_query = st.text_input("🔍 Search medicine:")
+            available_drugs = st.session_state.inventory[st.session_state.inventory['Stock Qty'] > 0].copy()
+            
             if search_query:
-                filtered_inv = filtered_inv[
-                    filtered_inv['Drug Name'].astype(str).str.contains(search_query, case=False, na=False) |
-                    filtered_inv['Category'].astype(str).str.contains(search_query, case=False, na=False)
+                available_drugs = available_drugs[
+                    available_drugs['Drug Name'].astype(str).str.contains(search_query, case=False, na=False) |
+                    available_drugs['Category'].astype(str).str.contains(search_query, case=False, na=False)
                 ]
-            
-            st.dataframe(filtered_inv[['ID', 'Drug Name', 'Category', 'Selling Price (TZS)', 'Stock Qty', 'Expiry Date']], use_container_width=True)
 
-        with col2:
-            st.subheader("New Sale Checkout")
-            seller_name = st.text_input("Seller Name / Cashier:", value="Staff 1")
-            
-            # Select Drug
-            available_drugs = st.session_state.inventory[st.session_state.inventory['Stock Qty'] > 0]
             drug_options = available_drugs['Drug Name'].tolist()
             
             if not drug_options:
-                st.error("All items are currently out of stock!")
+                st.error("No matching medicines in stock!")
             else:
                 selected_drug = st.selectbox("Select Medicine", drug_options)
                 
-                # Get drug details
+                # Fetch selected drug info
                 drug_row = available_drugs[available_drugs['Drug Name'] == selected_drug].iloc[0]
-                max_stock = int(drug_row['Stock Qty'])
+                current_stock = int(drug_row['Stock Qty'])
                 unit_price = float(drug_row['Selling Price (TZS)'])
                 
-                st.info(f"Price: **TSh {unit_price:,.0f}** | In Stock: **{max_stock} units**")
+                st.info(f"Price: **TSh {unit_price:,.0f}** | In Stock: **{current_stock} units**")
                 
-                qty_to_sell = st.number_input("Quantity to Sell", min_value=1, max_value=max_stock, value=1)
-                total_amount = qty_to_sell * unit_price
+                # Dosage & Calculator Block
+                st.markdown("---")
+                st.markdown("##### 📐 Dosage & Quantity Calculator")
                 
-                st.markdown(f"### Total: TSh {total_amount:,.0f}")
+                use_calculator = st.checkbox("Use Dosage Calculator (Auto-count Qty)", value=True)
                 
-                if st.button("Complete Sale & Print Receipt", type="primary"):
-                    # Update Inventory Stock
-                    idx = st.session_state.inventory[st.session_state.inventory['Drug Name'] == selected_drug].index[0]
-                    st.session_state.inventory.at[idx, 'Stock Qty'] -= qty_to_sell
+                if use_calculator:
+                    dose_freq = st.selectbox(
+                        "Dose Frequency", 
+                        [
+                            "OD (Once daily - 1x/day)", 
+                            "BD (Twice daily - 2x/day)", 
+                            "TDS (Three times daily - 3x/day)", 
+                            "QID (Four times daily - 4x/day)", 
+                            "STAT (Single dose immediately)", 
+                            "PRN (As needed / Custom)"
+                        ]
+                    )
                     
-                    # Record Sale
-                    new_sale = pd.DataFrame([{
-                        "Sale ID": "S-" + str(len(st.session_state.sales_df) + 1001),
-                        "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    freq_multiplier_map = {
+                        "OD (Once daily - 1x/day)": 1,
+                        "BD (Twice daily - 2x/day)": 2,
+                        "TDS (Three times daily - 3x/day)": 3,
+                        "QID (Four times daily - 4x/day)": 4,
+                        "STAT (Single dose immediately)": 1,
+                        "PRN (As needed / Custom)": 1
+                    }
+                    multiplier = freq_multiplier_map[dose_freq]
+                    
+                    days = st.number_input("Duration (Number of Days)", min_value=1, max_value=30, value=3)
+                    units_per_dose = st.number_input("Units per Dose (e.g., 1 or 2 tabs)", min_value=1, max_value=10, value=1)
+                    
+                    calculated_qty = multiplier * days * units_per_dose
+                    st.caption(f"💡 Calculated Quantity: **{calculated_qty} units** ({units_per_dose} unit(s) × {multiplier} times/day × {days} days)")
+                    
+                    # Set default calculated quantity
+                    default_qty = min(calculated_qty, current_stock)
+                    dosage_note = f"{dose_freq.split(' ')[0]} for {days} days"
+                else:
+                    default_qty = 1
+                    dosage_note = st.text_input("Dosage Instructions (Optional):", value="")
+
+                # Final quantity adjustment
+                final_qty = st.number_input("Quantity to Add to Cart", min_value=1, max_value=current_stock, value=default_qty)
+                
+                if st.button("➕ Add Item to Cart", type="secondary"):
+                    item_total = final_qty * unit_price
+                    st.session_state.cart.append({
                         "Drug Name": selected_drug,
-                        "Qty Sold": qty_to_sell,
-                        "Total Price (TZS)": total_amount,
-                        "Seller": seller_name
-                    }])
-                    
-                    st.session_state.sales_df = pd.concat([st.session_state.sales_df, new_sale], ignore_index=True)
-                    save_data()
-                    
-                    st.success(f"Sale completed successfully! Total: TSh {total_amount:,.0f}")
-                    st.balloons()
+                        "Unit Price (TZS)": unit_price,
+                        "Qty": final_qty,
+                        "Dosage Instructions": dosage_note,
+                        "Subtotal (TZS)": item_total
+                    })
+                    st.success(f"Added {selected_drug} (x{final_qty}) to cart!")
                     st.rerun()
+
+        # --- RIGHT COLUMN: CUSTOMER CART & CHECKOUT ---
+        with col2:
+            st.subheader("2. Shopping Cart & Bill Summary")
+            seller_name = st.text_input("Seller Name / Cashier:", value="Staff 1")
+            
+            if not st.session_state.cart:
+                st.info("🛒 The cart is currently empty. Select a medicine on the left to add items.")
+            else:
+                cart_df = pd.DataFrame(st.session_state.cart)
+                
+                # Display Cart Table
+                st.dataframe(
+                    cart_df[["Drug Name", "Qty", "Unit Price (TZS)", "Dosage Instructions", "Subtotal (TZS)"]], 
+                    use_container_width=True
+                )
+                
+                total_bill = cart_df["Subtotal (TZS)"].sum()
+                st.markdown(f"## **Total Bill: TSh {total_bill:,.0f}**")
+                
+                col_clear, col_checkout = st.columns([1, 2])
+                
+                with col_clear:
+                    if st.button("🗑️ Clear Cart"):
+                        st.session_state.cart = []
+                        st.rerun()
+
+                with col_checkout:
+                    if st.button("✅ Complete Sale & Checkout", type="primary"):
+                        sale_id = "S-" + str(len(st.session_state.sales_df) + 1001)
+                        now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+                        
+                        # Update Inventory and record sales for each item
+                        for item in st.session_state.cart:
+                            d_name = item["Drug Name"]
+                            qty_sold = item["Qty"]
+                            total_p = item["Subtotal (TZS)"]
+                            instructions = item["Dosage Instructions"]
+                            
+                            # Deduct stock
+                            idx = st.session_state.inventory[st.session_state.inventory['Drug Name'] == d_name].index[0]
+                            st.session_state.inventory.at[idx, 'Stock Qty'] -= qty_sold
+                            
+                            # Record Sale Row
+                            new_sale = pd.DataFrame([{
+                                "Sale ID": sale_id,
+                                "Date": now_str,
+                                "Drug Name": d_name,
+                                "Qty Sold": qty_sold,
+                                "Total Price (TZS)": total_p,
+                                "Seller": seller_name,
+                                "Dosage Instructions": instructions
+                            }])
+                            st.session_state.sales_df = pd.concat([st.session_state.sales_df, new_sale], ignore_index=True)
+
+                        # Save to CSV
+                        save_data()
+                        
+                        # Reset Cart
+                        st.session_state.cart = []
+                        st.success(f"Transaction {sale_id} completed successfully! Total Paid: TSh {total_bill:,.0f}")
+                        st.balloons()
+                        st.rerun()
 
 # ==========================================
 # 2. ADMIN DASHBOARD
@@ -128,12 +219,12 @@ elif app_mode == "🔒 Admin Dashboard":
             else:
                 total_revenue = st.session_state.sales_df['Total Price (TZS)'].sum()
                 total_items_sold = st.session_state.sales_df['Qty Sold'].sum()
-                total_transactions = len(st.session_state.sales_df)
+                total_transactions = st.session_state.sales_df['Sale ID'].nunique()
                 
                 m1, m2, m3 = st.columns(3)
                 m1.metric("Total Revenue", f"TSh {total_revenue:,.0f}")
                 m2.metric("Items Sold", total_items_sold)
-                m3.metric("Total Transactions", total_transactions)
+                m3.metric("Total Checkout Bills", total_transactions)
                 
                 st.markdown("### Detailed Transaction Log")
                 st.dataframe(st.session_state.sales_df, use_container_width=True)
